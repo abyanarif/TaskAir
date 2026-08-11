@@ -466,6 +466,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <TelegramModal
         isOpen={isTelegramModalOpen}
         onClose={() => setIsTelegramModalOpen(false)}
+        enrolledCourses={availableCourses.map((c) => c.name)}
       />
     </div>
   );

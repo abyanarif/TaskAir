@@ -139,7 +139,7 @@ export async function getUserPreferencesAction(): Promise<ActionResponse<UserPre
     const supabase = createSupabaseServerClient();
     const { data, error } = await supabase
       .from("user_profiles")
-      .select("hidden_courses, telegram_chat_id")
+      .select("hidden_courses, telegram_chat_id, notified_courses, reminder_time, enable_daily_digest")
       .eq("username", session.username)
       .maybeSingle();
 
@@ -156,6 +156,9 @@ export async function getUserPreferencesAction(): Promise<ActionResponse<UserPre
       data: {
         hiddenCourses: Array.isArray(data?.hidden_courses) ? data.hidden_courses : [],
         telegramChatId: data?.telegram_chat_id || "",
+        notifiedCourses: Array.isArray(data?.notified_courses) ? data.notified_courses : [],
+        reminderTime: data?.reminder_time || "07:00 WIB",
+        enableDailyDigest: data?.enable_daily_digest ?? true,
       },
     };
   } catch (err: any) {
@@ -163,6 +166,66 @@ export async function getUserPreferencesAction(): Promise<ActionResponse<UserPre
     return {
       success: true,
       data: { hiddenCourses: [] },
+    };
+  }
+}
+
+export async function updateTelegramPreferencesAction(params: {
+  telegramChatId: string;
+  notifiedCourses: string[];
+  reminderTime: string;
+  enableDailyDigest: boolean;
+}): Promise<ActionResponse<UserPreferences>> {
+  try {
+    const session = await getSession();
+    if (!session || !session.username) {
+      return {
+        success: false,
+        sessionExpired: true,
+        error: "Sesi Anda telah habis. Silakan login kembali.",
+      };
+    }
+
+    const supabase = createSupabaseServerClient();
+    const cleanChatId = params.telegramChatId.trim();
+
+    const { error } = await supabase.from("user_profiles").upsert(
+      {
+        username: session.username,
+        full_name: session.fullName,
+        telegram_chat_id: cleanChatId,
+        notified_courses: params.notifiedCourses,
+        reminder_time: params.reminderTime,
+        enable_daily_digest: params.enableDailyDigest,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "username" }
+    );
+
+    if (error) {
+      console.error("[Supabase Error] updateTelegramPreferencesAction:", error);
+      return {
+        success: false,
+        error: "Gagal menyimpan pengaturan notifikasi Telegram ke database.",
+      };
+    }
+
+    return {
+      success: true,
+      data: {
+        hiddenCourses: [],
+        telegramChatId: cleanChatId,
+        notifiedCourses: params.notifiedCourses,
+        reminderTime: params.reminderTime,
+        enableDailyDigest: params.enableDailyDigest,
+      },
+      message: "Pengaturan notifikasi Telegram berhasil disimpan.",
+    };
+  } catch (err: any) {
+    console.error("Error in updateTelegramPreferencesAction:", err);
+    return {
+      success: false,
+      error: err.message || "Gagal memperbarui pengaturan notifikasi Telegram.",
     };
   }
 }

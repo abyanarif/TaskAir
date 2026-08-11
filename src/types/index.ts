@@ -66,4 +66,7 @@ export interface UserProfile {
 export interface UserPreferences {
   hiddenCourses: string[];
   telegramChatId?: string;
+  notifiedCourses?: string[];
+  reminderTime?: string;
+  enableDailyDigest?: boolean;
 }
