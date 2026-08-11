@@ -3,6 +3,7 @@
 import { ActionResponse, UserProfile } from "@/types";
 import { loginToMoodle } from "@/lib/moodle";
 import { createSession, destroySession, getSession } from "@/lib/session";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function loginAction(
   username: string,
@@ -19,6 +20,21 @@ export async function loginAction(
   try {
     const sessionData = await loginToMoodle(username.trim(), password.trim());
     await createSession(sessionData);
+
+    try {
+      const supabase = createSupabaseServerClient();
+      await supabase.from("user_profiles").upsert(
+        {
+          username: sessionData.username,
+          full_name: sessionData.fullName,
+          last_login_at: new Date(sessionData.loggedInAt).toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "username" }
+      );
+    } catch (dbErr) {
+      console.warn("[Supabase Sync Warning] Failed to sync login profile:", dbErr);
+    }
 
     return {
       success: true,

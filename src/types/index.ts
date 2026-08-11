@@ -62,3 +62,8 @@ export interface UserProfile {
   fullName: string;
   loggedInAt: number;
 }
+
+export interface UserPreferences {
+  hiddenCourses: string[];
+  telegramChatId?: string;
+}

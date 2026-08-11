@@ -5,6 +5,8 @@ import { Assignment, UserProfile } from "@/types";
 import { sanitizeText } from "@/lib/moodle";
 import { AssignmentCard } from "./AssignmentCard";
 import { CourseFilterModal } from "./CourseFilterModal";
+import { TelegramModal } from "./TelegramModal";
+import { getUserPreferencesAction, updateHiddenCoursesAction } from "@/app/actions/user";
 import {
   BookCheck,
   Clock,
@@ -16,6 +18,7 @@ import {
   Inbox,
   Filter,
   BookOpen,
+  Send,
 } from "lucide-react";
 
 interface DashboardProps {
@@ -43,9 +46,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+  const [isTelegramModalOpen, setIsTelegramModalOpen] = useState(false);
 
-  // Load saved course filter selection from localStorage
+  // Load saved course filter selection from localStorage and sync with Supabase
   useEffect(() => {
+    let isMounted = true;
     try {
       const saved = localStorage.getItem("selected_courses");
       if (saved) {
@@ -54,9 +59,28 @@ export const Dashboard: React.FC<DashboardProps> = ({
     } catch (e) {
       console.error("Failed to load selected_courses from localStorage:", e);
     }
+
+    async function loadSupabasePrefs() {
+      try {
+        const res = await getUserPreferencesAction();
+        if (isMounted && res.success && res.data?.hiddenCourses) {
+          if (res.data.hiddenCourses.length > 0) {
+            setSelectedCourses(res.data.hiddenCourses);
+            localStorage.setItem("selected_courses", JSON.stringify(res.data.hiddenCourses));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load Supabase user preferences:", err);
+      }
+    }
+
+    loadSupabasePrefs();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Save selected courses to localStorage
+  // Save selected courses to localStorage and Supabase
   const handleSelectCourses = (courses: string[]) => {
     setSelectedCourses(courses);
     try {
@@ -64,6 +88,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
     } catch (e) {
       console.error("Failed to save selected_courses to localStorage:", e);
     }
+
+    // Sync directly to Supabase hidden_courses column
+    updateHiddenCoursesAction(courses).catch((err) => {
+      console.warn("[Supabase Sync Error] Failed to sync hidden courses:", err);
+    });
   };
 
   // Combine Enrolled Courses from Moodle API with Courses from active Assignments
@@ -316,6 +345,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Filter className="w-4 h-4 text-amber-500" />
               <span className="hidden sm:inline">Matkul</span>
             </button>
+
+            <button
+              onClick={() => setIsTelegramModalOpen(true)}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center px-2.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 transition-colors space-x-1.5 text-xs font-semibold"
+              title="Pengaturan Telegram Reminder"
+            >
+              <Send className="w-4 h-4 text-blue-500" />
+              <span className="hidden sm:inline">Telegram</span>
+            </button>
           </div>
         </div>
 
@@ -422,6 +460,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
         availableCourses={availableCourses}
         selectedCourses={selectedCourses}
         onSelectCourses={handleSelectCourses}
+      />
+
+      {/* Telegram Reminder Settings Modal */}
+      <TelegramModal
+        isOpen={isTelegramModalOpen}
+        onClose={() => setIsTelegramModalOpen(false)}
       />
     </div>
   );
