@@ -63,6 +63,7 @@ export async function getEnrolledCoursesAction(): Promise<ActionResponse<Enrolle
 export async function getCourseContentsAction(
   courseId: number
 ): Promise<ActionResponse<CourseSection[]>> {
+  console.log('[DEBUG Fetching Course Contents ID]:', courseId);
   try {
     const session = await getSession();
 

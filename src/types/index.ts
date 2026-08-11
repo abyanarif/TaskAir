@@ -32,6 +32,9 @@ export interface CourseResource {
   url: string;
   fileurl?: string;
   isExternal?: boolean;
+  fileName?: string;
+  fileExtension?: string;
+  fileSize?: number;
 }
 
 export interface CourseSection {

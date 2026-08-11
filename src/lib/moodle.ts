@@ -306,13 +306,184 @@ export async function fetchMoodleEnrolledCourses(
 }
 
 /**
- * Fetch Course Contents via core_course_get_contents
+ * Extract file extension from filename or URL
+ */
+export const getFileExtension = (filename?: string, url?: string): string => {
+  const target = filename || url || "";
+  const cleanTarget = target.split("?")[0].split("#")[0];
+  const lastDot = cleanTarget.lastIndexOf(".");
+  if (lastDot !== -1 && lastDot < cleanTarget.length - 1) {
+    const ext = cleanTarget.substring(lastDot + 1).toLowerCase();
+    if (ext.length >= 1 && ext.length <= 5 && /^[a-z0-9]+$/.test(ext)) {
+      return ext;
+    }
+  }
+  return "";
+};
+
+/**
+ * Fallback HTML Scraper for Course View (/course/view.php?id=...)
+ */
+async function fetchCourseContentsHTML(
+  courseId: number,
+  moodleSession: string
+): Promise<CourseSection[]> {
+  const url = `${BASE_URL}/course/view.php?id=${courseId}`;
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Cookie: `MoodleSession=${moodleSession}`,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      redirect: "manual",
+      cache: "no-store",
+    });
+
+    if (res.status === 302 || res.status === 301 || res.status === 401) {
+      throw new Error(MOODLE_SESSION_EXPIRED);
+    }
+
+    if (!res.ok) {
+      console.error(`[Moodle HTML Scraper Error] HTTP ${res.status} for courseId ${courseId}`);
+      return [];
+    }
+
+    const html = await res.text();
+    checkSessionExpiration(res, null, html);
+
+    const sections: CourseSection[] = [];
+
+    // Match section blocks in Moodle DOM (section-0, section-1, etc.)
+    const sectionRegex = /<(?:li|section|div)[^>]*id=["']section-(\d+)["'][^>]*>([\s\S]*?)(?=<(?:li|section|div)[^>]*id=["']section-\d+["']|<footer|<\/ul>|<\/main>|<\/body>)/gi;
+    let matches = Array.from(html.matchAll(sectionRegex));
+
+    if (matches.length > 0) {
+      for (const match of matches) {
+        const secIndex = Number(match[1]);
+        const secContent = match[2];
+
+        // Extract section title (.sectionname, .section-title, h3)
+        let secName = "";
+        const titleMatch =
+          secContent.match(/class=["'][^"']*sectionname[^"']*["'][^>]*>([\s\S]*?)<\/h\d>/i) ||
+          secContent.match(/class=["'][^"']*sectionname[^"']*["'][^>]*>([\s\S]*?)<\/span>/i) ||
+          secContent.match(/class=["'][^"']*sectionname[^"']*["'][^>]*>([\s\S]*?)<\/a>/i) ||
+          secContent.match(/class=["'][^"']*section-title[^"']*["'][^>]*>([\s\S]*?)<\/h\d>/i) ||
+          secContent.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+
+        if (titleMatch) {
+          secName = sanitizeText(titleMatch[1].replace(/<[^>]*>/g, ""));
+        }
+
+        if (!secName) {
+          secName = secIndex === 0 ? "General" : `Minggu ${secIndex}`;
+        }
+
+        // Parse module links in section
+        const modules = parseModulesFromHtmlChunk(secContent);
+
+        if (modules.length > 0 || secIndex === 0) {
+          sections.push({
+            id: String(secIndex),
+            name: secName,
+            modules,
+          });
+        }
+      }
+    }
+
+    // Fallback: If section regex matched no modules, extract all modules from full page HTML
+    const totalScrapedModules = sections.reduce((acc, s) => acc + s.modules.length, 0);
+    if (totalScrapedModules === 0) {
+      const allModules = parseModulesFromHtmlChunk(html);
+      if (allModules.length > 0) {
+        sections.push({
+          id: "0",
+          name: "Materi & Modul Perkuliahan",
+          modules: allModules,
+        });
+      }
+    }
+
+    console.log(`[DEBUG Moodle HTML Scraper courseId ${courseId}]: found ${sections.length} sections`);
+    return sections;
+  } catch (err: any) {
+    if (err.message === MOODLE_SESSION_EXPIRED) throw err;
+    console.error(`[Moodle HTML Scraper Error] courseId ${courseId}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Extract activity modules from HTML chunk
+ */
+function parseModulesFromHtmlChunk(htmlChunk: string): CourseResource[] {
+  const modules: CourseResource[] = [];
+  const seenModuleIds = new Set<string>();
+
+  // Match links for Moodle activities and pluginfile resources
+  const linkRegex = /<a[^>]*href=["']([^"']*(?:mod\/(resource|url|folder|page|assign|forum|quiz|choice|label)\/view\.php\?id=(\d+)|pluginfile\.php\/[^"']+))["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const matches = Array.from(htmlChunk.matchAll(linkRegex));
+
+  for (const m of matches) {
+    const fullUrl = m[1].replace(/&amp;/g, "&");
+    const modTypeFromUrl = m[2] || "resource";
+    const cmidFromUrl = m[3];
+    const innerHtml = m[4];
+
+    // Strip accesshide elements (e.g. <span class="accesshide"> File</span>)
+    const cleanedInner = innerHtml.replace(/<span[^>]*class=["'][^"']*accesshide[^"']*["'][^>]*>[\s\S]*?<\/span>/gi, "");
+    let rawTitle = cleanedInner.replace(/<[^>]*>/g, "").trim();
+
+    // Strip trailing activity type names if present from accesshide
+    rawTitle = rawTitle.replace(/\s+(File|URL|Folder|Page|Assignment|Forum|Quiz)$/i, "").trim();
+    const title = sanitizeText(rawTitle);
+
+    if (!title || title.length < 2) continue;
+    if (/^(edit|delete|duplicate|hide|show|mark as done|selesai)$/i.test(title)) continue;
+
+    let modId = cmidFromUrl;
+    if (!modId) {
+      const idMatch = fullUrl.match(/\/(\d+)\//);
+      modId = idMatch ? idMatch[1] : String(seenModuleIds.size + 1);
+    }
+
+    if (seenModuleIds.has(modId)) continue;
+    seenModuleIds.add(modId);
+
+    let modType = modTypeFromUrl.toLowerCase();
+    if (fullUrl.includes("pluginfile.php")) {
+      modType = "resource";
+    }
+
+    const ext = getFileExtension(title, fullUrl);
+    const fileurl = fullUrl.includes("pluginfile.php") ? fullUrl : undefined;
+
+    modules.push({
+      id: modId,
+      name: title,
+      modname: modType,
+      url: fullUrl,
+      fileurl: fileurl,
+      isExternal: modType === "url",
+      fileExtension: ext || undefined,
+    });
+  }
+
+  return modules;
+}
+
+/**
+ * Fetch Course Contents via core_course_get_contents with HTML scraper fallback
  */
 export async function fetchCourseContents(
   courseId: number,
   moodleSession: string,
   sesskey?: string
 ): Promise<CourseSection[]> {
+  console.log('[DEBUG Fetching Course Contents ID]:', courseId);
   const serviceUrl = `${BASE_URL}/lib/ajax/service.php?sesskey=${sesskey || ""}&info=core_course_get_contents`;
 
   const payload = [
@@ -320,7 +491,7 @@ export async function fetchCourseContents(
       index: 0,
       methodname: "core_course_get_contents",
       args: {
-        courseid: courseId,
+        courseid: Number(courseId),
       },
     },
   ];
@@ -338,54 +509,95 @@ export async function fetchCourseContents(
       cache: "no-store",
     });
 
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403) throw new Error(MOODLE_SESSION_EXPIRED);
-      console.error(`[Moodle Course Contents Error] HTTP ${res.status} for courseId ${courseId}`);
-      return [];
-    }
+    if (res.ok) {
+      const json = await res.json();
+      checkSessionExpiration(res, json);
 
-    const json = await res.json();
-    checkSessionExpiration(res, json);
+      let sectionsRaw: any[] | null = null;
+      if (Array.isArray(json)) {
+        if (json[0] && json[0].data && Array.isArray(json[0].data)) {
+          sectionsRaw = json[0].data;
+        } else if (json[0] && Array.isArray(json[0])) {
+          sectionsRaw = json[0];
+        } else if (json.length > 0 && json[0] && typeof json[0] === "object" && "modules" in json[0]) {
+          sectionsRaw = json;
+        }
+      } else if (json && typeof json === "object" && Array.isArray((json as any).data)) {
+        sectionsRaw = (json as any).data;
+      }
 
-    if (Array.isArray(json) && json[0] && json[0].data && Array.isArray(json[0].data)) {
-      const sectionsRaw = json[0].data;
+      if (sectionsRaw && Array.isArray(sectionsRaw) && sectionsRaw.length > 0) {
+        const parsedSections: CourseSection[] = sectionsRaw.map((sec: any, secIdx: number) => {
+          let secName = sanitizeText(sec.name || "");
+          if (!secName) {
+            secName = secIdx === 0 ? "General" : `Minggu ${secIdx}`;
+          }
 
-      return sectionsRaw.map((sec: any) => {
-        const secName = sanitizeText(sec.name || "Materi Umum");
-        const modules: CourseResource[] = (sec.modules || []).map((mod: any) => {
-          const modName = sanitizeText(mod.name || "Resource");
-          const modType = mod.modname || "resource";
-          const mainUrl = mod.url || `${BASE_URL}/mod/${modType}/view.php?id=${mod.id}`;
-          const contentFile = mod.contents?.[0];
-          const fileurl = contentFile?.fileurl
-            ? `${contentFile.fileurl}${contentFile.fileurl.includes("?") ? "&" : "?"}token=${sesskey || ""}`
-            : undefined;
+          const modules: CourseResource[] = (sec.modules || []).map((mod: any) => {
+            const modName = sanitizeText(mod.name || "Resource");
+            const modType = mod.modname || "resource";
+            const mainUrl = mod.url || `${BASE_URL}/mod/${modType}/view.php?id=${mod.id}`;
+            const contentFile = mod.contents?.[0];
+
+            let fileurl: string | undefined = undefined;
+            let fileName: string | undefined = undefined;
+            let fileSize: number | undefined = undefined;
+
+            if (contentFile) {
+              fileName = contentFile.filename;
+              fileSize = contentFile.filesize;
+              if (contentFile.fileurl) {
+                const targetUrl: string = contentFile.fileurl;
+                if (!targetUrl.includes("token=") && sesskey) {
+                  fileurl = `${targetUrl}${targetUrl.includes("?") ? "&" : "?"}token=${sesskey}`;
+                } else {
+                  fileurl = targetUrl;
+                }
+              }
+            }
+
+            const ext = getFileExtension(fileName || modName, fileurl || mainUrl);
+
+            return {
+              id: String(mod.id),
+              name: modName,
+              modname: modType,
+              url: mainUrl,
+              fileurl: fileurl || (modType === "resource" ? mainUrl : undefined),
+              isExternal: modType === "url",
+              fileName,
+              fileExtension: ext || undefined,
+              fileSize,
+            };
+          });
 
           return {
-            id: String(mod.id),
-            name: modName,
-            modname: modType,
-            url: mainUrl,
-            fileurl,
-            isExternal: modType === "url",
+            id: String(sec.id ?? secIdx),
+            name: secName,
+            summary: sanitizeText((sec.summary || "").replace(/<[^>]*>?/gm, "")),
+            modules,
           };
         });
 
-        return {
-          id: String(sec.id),
-          name: secName,
-          summary: sanitizeText((sec.summary || "").replace(/<[^>]*>?/gm, "")),
-          modules,
-        };
-      });
-    }
+        const totalModules = parsedSections.reduce((acc, s) => acc + s.modules.length, 0);
+        console.log(`[DEBUG WS core_course_get_contents courseId ${courseId}]: parsed ${parsedSections.length} sections, ${totalModules} modules`);
 
-    return [];
+        if (totalModules > 0) {
+          return parsedSections;
+        }
+      }
+    } else {
+      if (res.status === 401 || res.status === 403) throw new Error(MOODLE_SESSION_EXPIRED);
+      console.warn(`[Moodle WS core_course_get_contents HTTP ${res.status}] for courseId ${courseId}`);
+    }
   } catch (error: any) {
     if (error.message === MOODLE_SESSION_EXPIRED) throw error;
-    console.error(`[Moodle Course Contents Critical Error] courseId ${courseId}:`, error);
-    return [];
+    console.warn(`[Moodle Course Contents WS Error] courseId ${courseId}:`, error);
   }
+
+  // Fallback to HTML scraper if WS returned 0 modules or encountered non-session error
+  console.log(`[DEBUG Fallback to HTML Scraper for courseId ${courseId}]`);
+  return await fetchCourseContentsHTML(courseId, moodleSession);
 }
 
 /**

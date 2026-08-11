@@ -16,6 +16,7 @@ import {
   Folder,
   Globe,
   Video,
+  Image as ImageIcon,
   Loader2,
   AlertCircle,
   Search,
@@ -98,14 +99,25 @@ export const MaterialsExplorer: React.FC<MaterialsExplorerProps> = ({
       setIsSectionsLoading(true);
       setError(null);
       try {
-        const res = await getCourseContentsAction(selectedCourse!.id);
+        const courseIdNum = Number(selectedCourse!.id);
+        const res = await getCourseContentsAction(courseIdNum);
         if (isMounted) {
           if (res.success && res.data) {
             setSections(res.data);
             const initialExpanded: Record<string, boolean> = {};
-            res.data.slice(0, 3).forEach((sec) => {
-              initialExpanded[sec.id] = true;
+            let expandedCount = 0;
+            res.data.forEach((sec) => {
+              if (sec.modules && sec.modules.length > 0) {
+                initialExpanded[sec.id] = true;
+                expandedCount++;
+              }
             });
+            // If no section has modules, expand all sections as fallback
+            if (expandedCount === 0) {
+              res.data.slice(0, 5).forEach((sec) => {
+                initialExpanded[sec.id] = true;
+              });
+            }
             setExpandedSections(initialExpanded);
           } else {
             if (res.error?.includes("Sesi telah berakhir") && onLogout) {
@@ -139,22 +151,46 @@ export const MaterialsExplorer: React.FC<MaterialsExplorerProps> = ({
     }));
   };
 
-  const getResourceIcon = (modname: string, name: string) => {
+  const getResourceIcon = (modname: string, name: string, fileExtension?: string) => {
     const lowerName = name.toLowerCase();
+    const ext = (fileExtension || "").toLowerCase();
+
     if (modname === "url" || lowerName.includes("youtube") || lowerName.includes("zoom")) {
       return <Video className="w-4 h-4 text-rose-500 flex-shrink-0" />;
     }
-    if (lowerName.endsWith(".pdf") || modname === "pdf") {
+    if (ext === "pdf" || lowerName.endsWith(".pdf") || modname === "pdf") {
       return <FileText className="w-4 h-4 text-red-500 flex-shrink-0" />;
     }
-    if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".csv")) {
+    if (
+      ext === "xlsx" ||
+      ext === "xls" ||
+      ext === "csv" ||
+      lowerName.endsWith(".xlsx") ||
+      lowerName.endsWith(".xls") ||
+      lowerName.endsWith(".csv")
+    ) {
       return <FileSpreadsheet className="w-4 h-4 text-emerald-500 flex-shrink-0" />;
     }
-    if (lowerName.endsWith(".zip") || lowerName.endsWith(".rar")) {
+    if (ext === "pptx" || ext === "ppt" || lowerName.endsWith(".pptx") || lowerName.endsWith(".ppt")) {
+      return <FileText className="w-4 h-4 text-amber-500 flex-shrink-0" />;
+    }
+    if (ext === "docx" || ext === "doc" || lowerName.endsWith(".docx") || lowerName.endsWith(".doc")) {
+      return <FileText className="w-4 h-4 text-blue-500 flex-shrink-0" />;
+    }
+    if (
+      ["jpg", "jpeg", "png", "gif", "svg", "webp"].includes(ext) ||
+      /\.(jpg|jpeg|png|gif|svg|webp)$/i.test(lowerName)
+    ) {
+      return <ImageIcon className="w-4 h-4 text-purple-500 flex-shrink-0" />;
+    }
+    if (["zip", "rar", "7z", "tar", "gz"].includes(ext) || lowerName.endsWith(".zip") || lowerName.endsWith(".rar")) {
       return <Folder className="w-4 h-4 text-amber-500 flex-shrink-0" />;
     }
     if (modname === "forum" || modname === "page") {
       return <Globe className="w-4 h-4 text-blue-500 flex-shrink-0" />;
+    }
+    if (modname === "assign") {
+      return <FileText className="w-4 h-4 text-purple-500 flex-shrink-0" />;
     }
     return <File className="w-4 h-4 text-amber-400 flex-shrink-0" />;
   };
@@ -473,11 +509,16 @@ export const MaterialsExplorer: React.FC<MaterialsExplorerProps> = ({
                                     rel="noopener noreferrer"
                                     className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-amber-500/40 hover:shadow-md transition-all flex items-center justify-between group"
                                   >
-                                    <div className="flex items-center space-x-2.5 max-w-[80%]">
-                                      {getResourceIcon(mod.modname, mod.name)}
+                                    <div className="flex items-center space-x-2.5 max-w-[80%] min-w-0">
+                                      {getResourceIcon(mod.modname, mod.name, mod.fileExtension)}
                                       <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate group-hover:text-amber-500 transition-colors">
                                         {mod.name}
                                       </span>
+                                      {mod.fileExtension && (
+                                        <span className="text-[10px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 flex-shrink-0">
+                                          {mod.fileExtension}
+                                        </span>
+                                      )}
                                     </div>
 
                                     {mod.fileurl ? (
